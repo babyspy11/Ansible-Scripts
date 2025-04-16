@@ -47,12 +47,13 @@
         dd if=/dev/urandom of=/mypool/testfile1 bs=50M count=500
       creates: /mypool/testfile1  # This ensures the file is only created if it doesn't already exist
 
-    # Download the Ansible playbook from Google Drive
-    - name: Download the Ansible playbook from Google Drive
-      shell: |
-        wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1l-Ix6JMv7L_BG88br5gE5kXb04bic_vT' -O /root/ansible/playbook.yml
-      args:
-        creates: /root/ansible/playbook.yml  # Only download if the playbook file doesn't already exist
+    # Clone the repository from GitHub
+    - name: Clone the Ansible-Scripts repository from GitHub
+      git:
+        repo: https://github.com/babyspy11/Ansible-Scripts.git
+        dest: /root/ansible
+        clone: yes
+        update: yes
 
     - name: Ensure the /root/ansible directory exists
       file:
@@ -60,21 +61,22 @@
         state: directory
         mode: '0755'  # Ensure the directory has the proper permissions
 
-    - name: Set executable permissions on the playbook file
-      file:
-        path: /root/ansible/playbook.yml
-        mode: '0644'  # The playbook should be readable by all but not executable
-
-    - name: Download the zfs-monitor.sh script from Google Drive
-      shell: |
-        wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1MBCWpIRjbaHXez_x5jgbNbil0MKfovtJ' -O /usr/local/bin/zfs-monitor.sh
+    # Move the zfs-monitor.sh script to /usr/local/bin/
+    - name: Move the zfs-monitor.sh script to /usr/local/bin
+      command: mv /root/ansible/zfs-monitor.sh /usr/local/bin/zfs-monitor.sh
       args:
-        creates: /usr/local/bin/zfs-monitor.sh  # Only download if the file doesn't already exist
+        creates: /usr/local/bin/zfs-monitor.sh  # Only move if the script isn't already there
 
     - name: Set executable permissions on the zfs-monitor.sh script
       file:
         path: /usr/local/bin/zfs-monitor.sh
         mode: '0755'  # Make the script executable for all users
+
+    # Move the playbook to /root/ansible/playbook.yml
+    - name: Move the playbook to /root/ansible/playbook.yml
+      command: mv /root/ansible/your_playbook.yml /root/ansible/playbook.yml
+      args:
+        creates: /root/ansible/playbook.yml  # Only move if the playbook file isn't already there
 
     # Add cron job to run zfs-monitor.sh every 5 minutes
     - name: Add cron job to run zfs-monitor.sh every 5 minutes
