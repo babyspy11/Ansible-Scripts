@@ -1,0 +1,89 @@
+---
+- name: Install and configure ZFS pool and setup cron job
+  hosts: all  # You can specify a group like webservers or zfs_servers
+  become: true  # Use sudo to run commands that require elevated privileges
+
+  tasks:
+    - name: Update apt repositories and install zfsutils-linux
+      apt:
+        update_cache: yes
+        name: zfsutils-linux
+        state: present
+
+    - name: Verify ZFS version
+      command: zfs version
+      register: zfs_version_output
+      changed_when: false  # This is not a change-making task, just an info retrieval task
+
+    - name: Display ZFS version
+      debug:
+        msg: "ZFS version: {{ zfs_version_output.stdout }}"
+
+    - name: Create ZFS pool mypool with raidz3 configuration
+      command: >
+        zpool create mypool raidz3 /dev/xvdb /dev/xvdc /dev/xvdd /dev/xvde /dev/xvdf
+      creates: /dev/zvol/mypool  # Ensures the pool is only created if it doesn't already exist
+
+    - name: List ZFS pools to verify creation
+      command: zfs list
+      register: zfs_list_output
+      changed_when: false  # Again, this is just for informational purposes
+
+    - name: Display ZFS pools
+      debug:
+        msg: "ZFS pools: {{ zfs_list_output.stdout }}"
+
+    - name: Show ZFS pool status
+      command: zpool status
+      register: zpool_status_output
+      changed_when: false
+
+    - name: Display ZFS pool status
+      debug:
+        msg: "ZFS pool status: {{ zpool_status_output.stdout }}"
+
+    - name: Create a test file in the ZFS pool
+      command: >
+        dd if=/dev/urandom of=/mypool/testfile1 bs=50M count=500
+      creates: /mypool/testfile1  # This ensures the file is only created if it doesn't already exist
+
+    # Download the Ansible playbook from Google Drive
+    - name: Download the Ansible playbook from Google Drive
+      shell: |
+        wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1l-Ix6JMv7L_BG88br5gE5kXb04bic_vT' -O /root/ansible/playbook.yml
+      args:
+        creates: /root/ansible/playbook.yml  # Only download if the playbook file doesn't already exist
+
+    - name: Ensure the /root/ansible directory exists
+      file:
+        path: /root/ansible
+        state: directory
+        mode: '0755'  # Ensure the directory has the proper permissions
+
+    - name: Set executable permissions on the playbook file
+      file:
+        path: /root/ansible/playbook.yml
+        mode: '0644'  # The playbook should be readable by all but not executable
+
+    - name: Download the zfs-monitor.sh script from Google Drive
+      shell: |
+        wget --no-check-certificate 'https://drive.google.com/uc?export=download&id=1MBCWpIRjbaHXez_x5jgbNbil0MKfovtJ' -O /usr/local/bin/zfs-monitor.sh
+      args:
+        creates: /usr/local/bin/zfs-monitor.sh  # Only download if the file doesn't already exist
+
+    - name: Set executable permissions on the zfs-monitor.sh script
+      file:
+        path: /usr/local/bin/zfs-monitor.sh
+        mode: '0755'  # Make the script executable for all users
+
+    # Add cron job to run zfs-monitor.sh every 5 minutes
+    - name: Add cron job to run zfs-monitor.sh every 5 minutes
+      cron:
+        name: "Run zfs-monitor script every 5 minutes"
+        minute: "*/5"
+        hour: "*"
+        day: "*"
+        month: "*"
+        weekday: "*"
+        job: "/usr/local/bin/zfs-monitor.sh >> /var/log/zfs-monitor.log 2>&1"
+        state: present
