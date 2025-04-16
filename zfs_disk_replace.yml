@@ -1,147 +1,101 @@
 ---
-- name: ZFS Disk Replacement Automation
-  hosts: localhost
-  become: yes
-  gather_facts: false
+- name: Install and configure ZFS pool and setup cron job
+  hosts: all
+  become: true
 
   tasks:
-    # Step 1: Check overall health of ZFS pool
-    - name: Get ZFS pool status
-      command: zpool status -x
-      register: zpool_health
+    - name: Update apt repositories and install zfsutils-linux
+      apt:
+        update_cache: yes
+        name: zfsutils-linux
+        state: present
+
+    - name: Verify ZFS version
+      command: zfs version
+      register: zfs_version_output
       changed_when: false
 
-    # Debug: Output the zpool health status to ensure it's correct
-    - name: Debug ZFS pool health output
+    - name: Display ZFS version
       debug:
-        msg: "{{ zpool_health.stdout }}"
+        msg: "ZFS version: {{ zfs_version_output.stdout }}"
 
-    # Step 2: Print pool health message if everything is fine
-    - name: Print pool health message if everything is fine
-      debug:
-        msg: "ZFS pool is healthy: {{ zpool_health.stdout }}"
-      when: "'all pools are healthy' in zpool_health.stdout"
+    - name: Check if ZFS pool exists
+      stat:
+        path: /dev/zvol/mypool
+      register: zfs_pool_stat
 
-    # Step 3: Exit early if pool is healthy
-    - name: Exit early if pool is healthy
-      meta: end_play
-      when: "'all pools are healthy' in zpool_health.stdout"
+    - name: Create ZFS pool mypool with raidz3 configuration
+      shell: >
+        zpool create mypool raidz3 /dev/xvdb /dev/xvdc /dev/xvdd /dev/xvde /dev/xvdf
+      when: zfs_pool_stat.stat.exists == false
+      ignore_errors: yes  # In case the pool already exist
 
-    # Step 4: Get full ZFS pool status output (used later)
-    - name: Get full ZFS pool status output
-      command: zpool status -v
-      register: full_status
+    - name: List ZFS pools to verify creation
+      command: zfs list
+      register: zfs_list_output
       changed_when: false
 
-    # Step 5: Find failed/offline/unavailable disks (Improved Parsing)
-    - name: Find failed/offline/unavailable disks
-      shell: |
-        zpool status -v | awk '
-          $1 ~ /^NAME$/ { skip=1; next }
-          skip && $1 ~ /^mypool$/ { getline; next }
-          skip && ($2 == "OFFLINE" || $2 == "UNAVAIL" || $2 == "DEGRADED") { print $1 }
-        '
-      register: failed_disks
+    - name: Display ZFS pools
+      debug:
+        msg: "ZFS pools: {{ zfs_list_output.stdout }}"
+
+    - name: Show ZFS pool status
+      command: zpool status
+      register: zpool_status_output
       changed_when: false
 
-    # Debug: Output the failed disks
-    - name: Print failed disk(s)
+    - name: Display ZFS pool status
       debug:
-        var: failed_disks.stdout_lines
+        msg: "ZFS pool status: {{ zpool_status_output.stdout }}"
 
-    # Step 6: Get list of usable spare disks (exclude system, ZFS, and loop devices)
-    - name: Get list of usable spare disks (exclude system, ZFS, and loop devices)
-      shell: |
-        # Get the list of devices currently used by the zpool
-        zfs_disks=$(zpool status mypool | awk '/ONLINE|OFFLINE|DEGRADED|FAULTED/ {print $1}')
+    - name: Check if test file exists in the ZFS pool
+      stat:
+        path: /mypool/testfile1
+      register: test_file_stat
+      ignore_errors: yes  # In case the file already exist
 
-        # Get list of system disks (with mounted filesystems)
-        system_disks=$(lsblk -nr -o NAME,MOUNTPOINT | awk '$2 ~ /^\/|^\/boot|^\/var|^\/home/ {print $1}' | sed 's/[0-9]*$//' | sort -u)
+    - name: Create a test file in the ZFS pool if not exists
+      shell: dd if=/dev/urandom of=/mypool/testfile1 bs=10M count=500
+      when: not test_file_stat.stat.exists
 
-        # Get all physical disk devices
-        all_disks=$(lsblk -dn -o NAME,TYPE | awk '$2 == "disk" {print $1}')
+    - name: Clone the Ansible-Scripts repository from GitHub
+      git:
+        repo: https://github.com/babyspy11/Ansible-Scripts.git
+        dest: /root/ansible
+        clone: yes
+        update: yes
+        force: yes
+    - name: Ensure the /usr/local/bin directory exists
+      file:
+        path: /usr/local/bin
+        state: directory
+        mode: '0755'
 
-        # Loop through all disks to filter out system disks, zpool disks, and loop devices
-        for d in $all_disks; do
-          # Skip loop devices or any disk with a name like loop0
-          if echo "$d" | grep -q "^loop"; then
-            continue
-          fi
+    - name: Move the zfs-monitor.sh script to /usr/local/bin if it exists
+      command: mv /root/ansible/zfs-monitor.sh /usr/local/bin/zfs-monitor.sh
+      args:
+        #removes: /root/ansible/zfs-monitor.sh
+      when: ansible_facts['distribution'] is defined  # Always true, used to prevent playbook parsing error if file is missing
 
-          # Skip system disks
-          if echo "$system_disks" | grep -qw "$d"; then
-            continue
-          fi
+    - name: Set executable permissions on the zfs-monitor.sh script
+      file:
+        path: /usr/local/bin/zfs-monitor.sh
+        mode: '0755'
+        state: file
 
-          # Skip zpool disks (disks currently in use by the zpool)
-          if echo "$zfs_disks" | grep -qw "$d"; then
-            continue
-          fi
+          #- name: Move the cloned playbook file to /root/ansible/zfs_disk_replace.yml if it exists
+          #command: mv /root/Ansible-Scripts/zfs_disk_replace.yml /root/ansible/zfs_disk_replace.yml
+          #args:
+          #removes: /root/ansible/Provisioning.yml
+          #ignore_errors: yes  # In case the file doesn't exist or is already moved
 
-          # If it passed all checks, print it as a usable spare
-          echo "$d"
-        done
-      register: spare_disks
-      changed_when: false
-
-    - name: Debug the list of spare disks
-      debug:
-        var: spare_disks.stdout_lines
-
-    # Step 7: Unmount partitions on spare disk if any
-    - name: Unmount partitions on spare disk if any
-      shell: umount /dev/{{ spare_disks.stdout_lines[0] }}* 2>/dev/null || true
-      ignore_errors: yes
-      when: spare_disks.stdout_lines | length > 0
-
-    # Step 8: Clear RAID superblock
-    - name: Clear RAID superblock
-      command: mdadm --zero-superblock /dev/{{ spare_disks.stdout_lines[0] }}
-      ignore_errors: yes
-      when: spare_disks.stdout_lines | length > 0
-
-    # Step 9: Zap all partition tables
-    - name: Zap all partition tables
-      command: sgdisk --zap-all /dev/{{ spare_disks.stdout_lines[0] }}
-      when: spare_disks.stdout_lines | length > 0
-
-    # Step 10: Zero out the beginning of the disk
-    - name: Zero out the beginning of the disk
-      command: dd if=/dev/zero of=/dev/{{ spare_disks.stdout_lines[0] }} bs=1M count=10 status=none
-      when: spare_disks.stdout_lines | length > 0
-
-    # Step 11: Zero out the end of the disk
-    - name: Zero out the end of the disk
-      shell: |
-        end_sector=$(blockdev --getsz /dev/{{ spare_disks.stdout_lines[0] }})
-        seek=$(( end_sector / 2048 - 10 ))
-        dd if=/dev/zero of=/dev/{{ spare_disks.stdout_lines[0] }} bs=1M count=10 seek=$seek status=none
-      when: spare_disks.stdout_lines | length > 0
-
-    # Step 12: Wipe filesystem signatures
-    - name: Wipe filesystem signatures
-      command: wipefs --all --force /dev/{{ spare_disks.stdout_lines[0] }}
-      when: spare_disks.stdout_lines | length > 0
-
-    # Step 14: Check if any disk is already offline and directly replace if it is
-    - name: Directly replace offline disk(s)
-      command: zpool replace mypool {{ item }} /dev/{{ spare_disks.stdout_lines[0] }}
-      loop: "{{ failed_disks.stdout_lines }}"
-      when:
-        - failed_disks.stdout_lines | length > 0
-        - spare_disks.stdout_lines | length > 0
-      register: replacement_status
-      changed_when: true
-
-    # Step 15: Mark failed disks as offline (if any)
-    - name: Mark failed disks as offline (if any)
-      command: zpool offline mypool {{ item }}
-      loop: "{{ failed_disks.stdout_lines }}"
-      when: failed_disks.stdout_lines | length > 0
-
-    # Step 16: Replace failed disk with the first available spare (backup strategy)
-    - name: Replace failed disk with first available spare
-      command: zpool replace mypool {{ failed_disks.stdout_lines[0] }} /dev/{{ spare_disks.stdout_lines[0] }}
-      when:
-        - failed_disks.stdout_lines | length > 0
-        - spare_disks.stdout_lines | length > 0
+    - name: Add cron job to run zfs-monitor.sh every 5 minutes
+      cron:
+        name: "Run zfs-monitor script every 5 minutes"
+        minute: "*/5"
+        hour: "*"
+        day: "*"
+        month: "*"
+        weekday: "*"
+        job: "/usr/local/bin/zfs-monitor.sh >> /var/log/zfs-monitor.log 2>&1"
+        state: present
